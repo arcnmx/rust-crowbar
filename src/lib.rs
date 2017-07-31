@@ -79,68 +79,61 @@ pub use serde_json::value::Value;
 ///
 /// If an error is thrown, it is converted to a Python `RuntimeError`, and the `Debug` string for
 /// the `Error` returned is used as the value.
-pub type LambdaResult = Result<Value, Box<std::error::Error>>;
+pub type LambdaResult = Result<Value, Box<Error>>;
 
 use cpython::{Python, PyUnicode, PyTuple, PyErr, PythonObject, PythonObjectWithTypeObject,
               ObjectProtocol};
 use cpython_json::{from_json, to_json};
+use std::error::Error;
 
 /// Provides a view into the `context` object available to Lambda functions.
 ///
 /// Context object methods and attributes are documented at [The Context Object (Python)]
 /// (https://docs.aws.amazon.com/lambda/latest/dg/python-context-object.html) from the AWS Lambda
 /// docs.
-pub struct LambdaContext<'a> {
-    py: &'a Python<'a>,
+pub struct Context<'a> {
+    py: Python<'a>,
     py_context: &'a PyObject,
-    string_storage: [String; 7],
 }
 
-impl<'a> LambdaContext<'a> {
-    fn new(py: &'a Python, py_context: &'a PyObject) -> PyResult<LambdaContext<'a>> {
-        macro_rules! str_attr {
-            ($x:expr) => {
-                py_context.getattr(*py, $x)?.extract::<String>(*py)?;
-            }
-        }
-
-        let string_storage: [String; 7] = [str_attr!("function_name"),
-                                           str_attr!("function_version"),
-                                           str_attr!("invoked_function_arn"),
-                                           str_attr!("memory_limit_in_mb"),
-                                           str_attr!("aws_request_id"),
-                                           str_attr!("log_group_name"),
-                                           str_attr!("log_stream_name")];
-
-        Ok(LambdaContext {
+impl<'a> Context<'a> {
+    fn new(py: Python<'a>, py_context: &'a PyObject) -> Context<'a> {
+        Context {
             py: py,
             py_context: py_context,
-            string_storage: string_storage,
-        })
+        }
     }
 
     /// Name of the Lambda function that is executing.
-    pub fn function_name(&self) -> &str {
-        &self.string_storage[0]
+    pub fn function_name(&self) -> Result<String, ContextError> {
+        self.py_context.getattr(self.py, "function_name")
+            .and_then(|v| v.extract(self.py))
+            .map_err(|_| ContextError::Attribute)
     }
 
     /// The Lambda function version that is executing. If an alias is used to invoke the function,
     /// then `function_version` will be the version the alias points to.
-    pub fn function_version(&self) -> &str {
-        &self.string_storage[1]
+    pub fn function_version(&self) -> Result<String, ContextError> {
+        self.py_context.getattr(self.py, "function_version")
+            .and_then(|v| v.extract(self.py))
+            .map_err(|_| ContextError::Attribute)
     }
 
     /// The ARN used to invoke this function. It can be function ARN or alias ARN. An unqualified
     /// ARN executes the `$LATEST` version and aliases execute the function version it is pointing
     /// to.
-    pub fn invoked_function_arn(&self) -> &str {
-        &self.string_storage[2]
+    pub fn invoked_function_arn(&self) -> Result<String, ContextError> {
+        self.py_context.getattr(self.py, "invoked_function_arn")
+            .and_then(|v| v.extract(self.py))
+            .map_err(|_| ContextError::Attribute)
     }
 
     /// Memory limit, in MB, you configured for the Lambda function. You set the memory limit at
     /// the time you create a Lambda function and you can change it later.
-    pub fn memory_limit_in_mb(&self) -> &str {
-        &self.string_storage[3]
+    pub fn memory_limit_in_mb(&self) -> Result<String, ContextError> {
+        self.py_context.getattr(self.py, "memory_limit_in_mb")
+            .and_then(|v| v.extract(self.py))
+            .map_err(|_| ContextError::Attribute)
     }
 
     /// AWS request ID associated with the request. This is the ID returned to the client that
@@ -149,14 +142,18 @@ impl<'a> LambdaContext<'a> {
     /// **Note**: If AWS Lambda retries the invocation (for example, in a situation where the
     /// Lambda function that is processing Amazon Kinesis records throws an exception), the request
     /// ID remains the same.
-    pub fn aws_request_id(&self) -> &str {
-        &self.string_storage[4]
+    pub fn aws_request_id(&self) -> Result<String, ContextError> {
+        self.py_context.getattr(self.py, "aws_request_id")
+            .and_then(|v| v.extract(self.py))
+            .map_err(|_| ContextError::Attribute)
     }
 
     /// The name of the CloudWatch log group where you can find logs written by your Lambda
     /// function.
-    pub fn log_group_name(&self) -> &str {
-        &self.string_storage[5]
+    pub fn log_group_name(&self) -> Result<String, ContextError> {
+        self.py_context.getattr(self.py, "log_group_name")
+            .and_then(|v| v.extract(self.py))
+            .map_err(|_| ContextError::Attribute)
     }
 
     /// The name of the CloudWatch log stream where you can find logs written by your Lambda
@@ -165,8 +162,10 @@ impl<'a> LambdaContext<'a> {
     /// The value is null if your Lambda function is unable to create a log stream, which can
     /// happen if the execution role that grants necessary permissions to the Lambda function does
     /// not include permissions for the CloudWatch Logs actions.
-    pub fn log_stream_name(&self) -> &str {
-        &self.string_storage[6]
+    pub fn log_stream_name(&self) -> Result<String, ContextError> {
+        self.py_context.getattr(self.py, "log_stream_name")
+            .and_then(|v| v.extract(self.py))
+            .map_err(|_| ContextError::Attribute)
     }
 
     /// Returns the remaining execution time, in milliseconds, until AWS Lambda terminates the
@@ -177,11 +176,11 @@ impl<'a> LambdaContext<'a> {
     /// should simply call this as `context.get_remaining_time_in_millis()?` in your function.
     pub fn get_remaining_time_in_millis(&self) -> Result<u64, ContextError> {
         self.py_context
-            .call_method(*self.py,
+            .call_method(self.py,
                          "get_remaining_time_in_millis",
-                         PyTuple::new(*self.py, &[]),
+                         PyTuple::new(self.py, &[]),
                          None)
-            .and_then(|x| x.extract::<u64>(*self.py))
+            .and_then(|x| x.extract(self.py))
             .map_err(|_| ContextError::GetRemainingTimeFailed)
     }
 }
@@ -192,26 +191,24 @@ pub enum ContextError {
     /// Occurs if crowbar is unable to call the method on the context object or cast it to a `u64`
     /// from the Python object.
     GetRemainingTimeFailed,
+    Attribute,
 }
 
 impl std::fmt::Display for ContextError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match *self {
-            ContextError::GetRemainingTimeFailed => {
-                write!(f, "failed to call get_remaining_time_in_millis")
-            }
-        }
+        write!(f, "{}", self.description())
     }
 }
 
-impl std::error::Error for ContextError {
+impl Error for ContextError {
     fn description(&self) -> &str {
         match *self {
             ContextError::GetRemainingTimeFailed => "failed to call get_remaining_time_in_millis",
+            ContextError::Attribute => "failed to read context attribute",
         }
     }
 
-    fn cause(&self) -> Option<&std::error::Error> {
+    fn cause(&self) -> Option<&Error> {
         None
     }
 }
@@ -241,12 +238,12 @@ impl IntoValueOption for () {
 
 #[doc(hidden)]
 pub fn handler<F, O, E>(py: Python, f: F, py_event: PyObject, py_context: PyObject) -> PyResult<PyObject>
-    where F: FnOnce(Value, LambdaContext) -> Result<O, E>,
+    where F: FnOnce(Value, Context) -> Result<O, E>,
           E: std::fmt::Debug,
           O: IntoValueOption
 {
     let event = to_json(py, &py_event).map_err(|e| e.to_pyerr(py))?;
-    f(event, LambdaContext::new(&py, &py_context)?)
+    f(event, Context::new(py, &py_context))
         .map(|v| v.into_value_option())
         .map_err(|e| PyErr {
             ptype: cpython::exc::RuntimeError::type_object(py).into_object(),
